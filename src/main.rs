@@ -2,8 +2,7 @@ use std::cmp::Ordering;
 use std::env;
 use std::fmt::{Display, Formatter};
 use std::io::{self, Error, ErrorKind};
-use std::process;
-use std::process::exit;
+use std::process::{exit, Command, Stdio};
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -26,11 +25,11 @@ fn main() {
     };
     boxes.sort();
     for box_inst in boxes {
-        println!("trying {}", box_inst);
-        match process::Command::new("distrobox-enter")
+        match Command::new("distrobox-enter")
             .arg(&box_inst.name)
             .arg("--")
             .args(args.clone())
+            .stderr(Stdio::null()) // disable error output
             .spawn()
         {
             Ok(mut child) => {
@@ -59,23 +58,28 @@ fn main() {
 struct DistroboxInstance {
     name: String,
     priority: usize,
+    running: bool,
 }
 impl TryFrom<(usize, &String)> for DistroboxInstance {
-    type Error = io::Error;
+    type Error = Error;
 
     fn try_from(value: (usize, &String)) -> Result<DistroboxInstance, Error> {
+        let mut split_stat = value.1.split("|");
         Ok(DistroboxInstance {
-            name: value
-                .1
-                .split("|")
+            name: split_stat
                 .nth(1)
-                .ok_or_else(|| Error::new(ErrorKind::NotFound, "Value was not found"))?
+                .ok_or_else(|| Error::new(ErrorKind::NotFound, "Name was not found"))?
                 .trim()
                 .to_string(),
             priority: value.0,
+            running: split_stat
+                .next()
+                .ok_or_else(|| Error::new(ErrorKind::NotFound, "State was not found"))?
+                .contains("Up"),
         })
     }
 }
+
 impl Display for DistroboxInstance {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "Box {} [{}]", self.name, self.priority)
@@ -84,7 +88,9 @@ impl Display for DistroboxInstance {
 impl Eq for DistroboxInstance {}
 impl PartialEq<Self> for DistroboxInstance {
     fn eq(&self, other: &Self) -> bool {
-        self.priority.eq(&other.priority) && self.name.eq(&other.name)
+        self.priority.eq(&other.priority)
+            && self.name.eq(&other.name)
+            && self.running.eq(&other.running)
     }
 }
 impl PartialOrd<Self> for DistroboxInstance {
@@ -94,7 +100,15 @@ impl PartialOrd<Self> for DistroboxInstance {
 }
 impl Ord for DistroboxInstance {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.priority.cmp(&other.priority)
+        if self.running == other.running {
+            self.priority.cmp(&other.priority)
+        } else {
+            if self.running {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
     }
 
     fn max(self, other: Self) -> Self
@@ -134,7 +148,7 @@ impl Ord for DistroboxInstance {
 }
 
 fn get_boxes() -> io::Result<Vec<DistroboxInstance>> {
-    let out = process::Command::new("/usr/bin/distrobox-list")
+    let out = Command::new("/usr/bin/distrobox-list")
         .arg("--no-color")
         .output()?;
     if !out.status.success() {
