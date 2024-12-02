@@ -35,7 +35,7 @@ fn main() {
             Ok(mut child) => {
                 match child.wait() {
                     Ok(status) => {
-                        if status.success() {
+                        if status.code() != Some(127) {
                             exit(0);
                         }
                         // else, try next box
